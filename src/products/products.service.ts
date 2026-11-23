@@ -156,11 +156,20 @@ export class ProductsService {
     };
   }
 
+  /** Returns `base`, or `base-2`, `base-3`… so the unique slug index never rejects a new product. */
+  private async uniqueSlug(base: string): Promise<string> {
+    let candidate = base;
+    for (let n = 2; await this.productsRepository.existsBy({ slug: candidate }); n += 1) {
+      candidate = `${base}-${n}`;
+    }
+    return candidate;
+  }
+
   async create(dto: CreateProductDto) {
     const { images, variants, tagIds, ...rest } = dto;
     const product = this.productsRepository.create({
       ...rest,
-      slug: rest.slug || slugify(rest.name),
+      slug: await this.uniqueSlug(rest.slug || slugify(rest.name)),
     });
 
     if (images?.length) {

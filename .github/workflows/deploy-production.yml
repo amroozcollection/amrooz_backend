@@ -2,131 +2,138 @@ name: Deploy Backend to Production
 
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch: # Allows manual trigger from GitHub
+    branches: [main]
+  workflow_dispatch:
+
+# Never run two deployments at the same time.
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: production
     env:
-      DEPLOY_SSH_HOST: ${{ secrets.SSH_HOST || vars.SSH_HOST }}
-      DEPLOY_SSH_USERNAME: ${{ secrets.SSH_USERNAME || vars.SSH_USERNAME }}
-      DEPLOY_SSH_PASSWORD: ${{ secrets.SSH_PASSWORD || vars.SSH_PASSWORD }}
-      DEPLOY_SSH_PORT: ${{ secrets.SSH_PORT || vars.SSH_PORT }}
-    
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_PORT: ${{ secrets.SSH_PORT }}
+      SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+      SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+      APP_DIR: /home/u278943707/domains/api.amroozcollection.com/hbuilds/current/nodejs
+
     steps:
+      - name: Check deployment secrets
+        run: |
+          missing=""
+          for v in SSH_HOST SSH_PORT SSH_USERNAME; do
+            [ -z "${!v}" ] && missing="$missing $v"
+          done
+          if [ -z "$SSH_PRIVATE_KEY" ] && [ -z "$SSH_PASSWORD" ]; then
+            missing="$missing SSH_PRIVATE_KEY(or SSH_PASSWORD)"
+          fi
+          if [ -n "$missing" ]; then
+            echo "::error::Missing secrets in Settings > Environments > production:$missing"
+            exit 1
+          fi
+
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
-          cache: 'npm'
+          node-version: '22'
+          cache: npm
 
       - name: Install dependencies
-        run: npm install --legacy-peer-deps
+        run: npm ci --legacy-peer-deps
 
       - name: Build NestJS application
         run: npm run build
 
-      - name: Create deployment package
+      - name: Package release (production dependencies only)
         run: |
-          echo "📦 Creating deployment package..."
-          # Create a tarball with built files and necessary runtime files
-          tar -czf deployment.tar.gz \
-            dist \
-            package.json \
-            package-lock.json \
-            node_modules
+          set -e
+          test -f dist/main.js
+          npm prune --omit=dev --legacy-peer-deps
+          tar -czf release.tar.gz dist node_modules package.json package-lock.json
+          ls -lh release.tar.gz
 
-      - name: Validate deployment credentials
+      - name: Configure SSH
         run: |
-          missing=()
-          [ -z "$DEPLOY_SSH_HOST" ] && missing+=("SSH_HOST/secrets or vars")
-          [ -z "$DEPLOY_SSH_USERNAME" ] && missing+=("SSH_USERNAME/secrets or vars")
-          [ -z "$DEPLOY_SSH_PASSWORD" ] && missing+=("SSH_PASSWORD/secrets or vars")
-          [ -z "$DEPLOY_SSH_PORT" ] && missing+=("SSH_PORT/secrets or vars")
-
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "❌ Missing deployment credentials: ${missing[*]}"
-            exit 1
-          fi
-
-      - name: Deploy to Hostinger via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ env.DEPLOY_SSH_HOST }}
-          username: ${{ env.DEPLOY_SSH_USERNAME }}
-          password: ${{ env.DEPLOY_SSH_PASSWORD }}
-          port: ${{ env.DEPLOY_SSH_PORT }}
-          script: |
-            echo "🚀 Starting backend deployment..."
-            
-            # Create deployment directory
-            DEPLOY_DIR="/home/u278943707/domains/api.amroozcollection.com/hbuilds/current/nodejs"
-            mkdir -p $DEPLOY_DIR
-            cd $DEPLOY_DIR
-            
-            # Backup current deployment
-            if [ -d "dist" ]; then
-              echo "📦 Backing up current deployment..."
-              tar -czf backup-$(date +%Y%m%d-%H%M%S).tar.gz dist || true
-              # Keep only last 3 backups
-              ls -t backup-*.tar.gz | tail -n +4 | xargs rm -f 2>/dev/null || true
-            fi
-            
-            echo "✅ Ready for file transfer"
-
-      - name: Transfer build files
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ env.DEPLOY_SSH_HOST }}
-          username: ${{ env.DEPLOY_SSH_USERNAME }}
-          password: ${{ env.DEPLOY_SSH_PASSWORD }}
-          port: ${{ env.DEPLOY_SSH_PORT }}
-          source: "deployment.tar.gz"
-          target: "/home/u278943707/domains/api.amroozcollection.com/hbuilds/current/nodejs/"
-
-      - name: Extract and restart application
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ env.DEPLOY_SSH_HOST }}
-          username: ${{ env.DEPLOY_SSH_USERNAME }}
-          password: ${{ env.DEPLOY_SSH_PASSWORD }}
-          port: ${{ env.DEPLOY_SSH_PORT }}
-          script: |
-            cd /home/u278943707/domains/api.amroozcollection.com/hbuilds/current/nodejs
-            
-            echo "📂 Extracting build files..."
-            tar -xzf deployment.tar.gz
-            rm deployment.tar.gz
-            
-            echo "🔧 Setting permissions..."
-            chmod -R 755 dist
-            
-            echo "🔄 Restarting application..."
-            # If using PM2
-            if command -v pm2 &> /dev/null; then
-              pm2 restart amrooz-backend || pm2 start dist/main.js --name "amrooz-backend"
-            else
-              echo "⚠️  PM2 not found, touching file to trigger restart"
-              touch dist/main.js
-            fi
-            
-            echo "✅ Backend deployment completed successfully!"
-
-      - name: Verify deployment
-        run: |
-          echo "⏳ Waiting for server to restart..."
-          sleep 10
-          
-          echo "🔍 Checking if API is responding..."
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" https://api.amroozcollection.com/api)
-          
-          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "404" ]; then
-            echo "✅ Backend is responding! (HTTP $HTTP_CODE)"
+          set -e
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          if [ -n "$SSH_PRIVATE_KEY" ]; then
+            printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+            chmod 600 ~/.ssh/deploy_key
           else
-            echo "⚠️  Warning: API returned HTTP $HTTP_CODE"
-            exit 1
+            sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
           fi
+          if [ -n "$SSH_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -p "$SSH_PORT" -t ed25519 "$SSH_HOST" > ~/.ssh/known_hosts
+          fi
+          {
+            echo '#!/usr/bin/env bash'
+            echo 'OPTS="-p $SSH_PORT -o StrictHostKeyChecking=yes -o ConnectTimeout=30"'
+            if [ -n "$SSH_PRIVATE_KEY" ]; then
+              echo 'exec ssh $OPTS -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes "$@"'
+            else
+              echo 'exec sshpass -e ssh $OPTS "$@"'
+            fi
+          } > ~/.ssh/run_ssh.sh
+          {
+            echo '#!/usr/bin/env bash'
+            echo 'OPTS="-P $SSH_PORT -o StrictHostKeyChecking=yes -o ConnectTimeout=30"'
+            if [ -n "$SSH_PRIVATE_KEY" ]; then
+              echo 'exec scp $OPTS -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes "$@"'
+            else
+              echo 'exec sshpass -e scp $OPTS "$@"'
+            fi
+          } > ~/.ssh/run_scp.sh
+          chmod 700 ~/.ssh/run_ssh.sh ~/.ssh/run_scp.sh
+
+      - name: Upload release
+        env:
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
+        run: ~/.ssh/run_scp.sh release.tar.gz "$SSH_USERNAME@$SSH_HOST:deploy-backend.tar.gz"
+
+      - name: Install release and restart
+        env:
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          ~/.ssh/run_ssh.sh "$SSH_USERNAME@$SSH_HOST" "APP_DIR='$APP_DIR' bash -s" <<'REMOTE'
+          set -euo pipefail
+          BK="$HOME/deploy-backups/backend"; mkdir -p "$BK"
+          STAGE="$(mktemp -d "$HOME/stage-backend.XXXXXX")"
+          tar -xzf "$HOME/deploy-backend.tar.gz" -C "$STAGE"
+          test -f "$STAGE/dist/main.js" && test -d "$STAGE/node_modules"
+
+          echo "Backing up current release..."
+          tar -czf "$BK/$(date +%Y%m%d-%H%M%S).tar.gz" -C "$APP_DIR" dist node_modules package.json package-lock.json 2>/dev/null || true
+          ls -t "$BK"/*.tar.gz 2>/dev/null | tail -n +4 | xargs -r rm -f
+
+          echo "Installing new release (keeping uploads, public, logs, tmp and environment)..."
+          cd "$APP_DIR"
+          rm -rf dist node_modules
+          mv "$STAGE/dist" "$STAGE/node_modules" "$APP_DIR/"
+          cp -f "$STAGE/package.json" "$STAGE/package-lock.json" "$APP_DIR/"
+          rm -rf "$STAGE" "$HOME/deploy-backend.tar.gz"
+
+          mkdir -p tmp && touch tmp/restart.txt
+          echo "Release installed, restart requested."
+          REMOTE
+
+      - name: Verify API is up
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://api.amroozcollection.com/api/products || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 15
+          done
+          echo "::error::API did not return 200 after deploy. Previous release is in ~/deploy-backups/backend on the server."
+          exit 1
