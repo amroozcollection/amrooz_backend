@@ -69,10 +69,16 @@
     },
     "lodash": "^4.18.0",
     "picomatch": "^4.0.4",
-    "glob": "^10.5.0",
+    "glob": "^14.0.2",
     "qs": "^6.16.0",
     "file-type": "^21.3.2",
-    "ajv": "^8.18.0"
+    "ajv": "^8.18.0",
+    "mjml-cli": {
+      "minimatch": "^11.0.1"
+    },
+    "editorconfig": {
+      "minimatch": "^11.0.1"
+    }
   },
   "devDependencies": {
     "@nestjs/testing": "^11.1.18",
