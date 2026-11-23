@@ -14,6 +14,7 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import { Request } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { uploadsDir } from '../common/uploads-dir';
 
 const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
@@ -26,7 +27,7 @@ export class UploadsController {
     FileInterceptor('file', {
       storage: diskStorage({
         destination: (_req, _file, cb) => {
-          const dir = join(process.cwd(), 'uploads', 'products');
+          const dir = join(uploadsDir(), 'products');
           fs.mkdirSync(dir, { recursive: true });
           cb(null, dir);
         },

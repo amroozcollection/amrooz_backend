@@ -5,6 +5,7 @@ import { ValidationPipe, Logger } from '@nestjs/common';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import { join } from 'path';
+import { uploadsDir } from './common/uploads-dir';
 
 function assertSecretsConfigured() {
   const required = ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET', 'JWT_CUSTOMER_SECRET'];
@@ -26,7 +27,7 @@ async function bootstrap() {
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
   app.use(cookieParser());
 
-  app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads/' });
+  app.useStaticAssets(uploadsDir(), { prefix: '/uploads/' });
   app.useStaticAssets(join(process.cwd(), 'public'), { prefix: '/public/' });
 
   // Cookies carry the session, so CORS must reflect a known, explicit origin —

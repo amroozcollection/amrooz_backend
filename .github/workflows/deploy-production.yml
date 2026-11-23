@@ -123,6 +123,13 @@ jobs:
           cp -f "$STAGE/package.json" "$STAGE/package-lock.json" "$APP_DIR/"
           rm -rf "$STAGE" "$HOME/deploy-backend.tar.gz"
 
+          # Product images live OUTSIDE the app folder so no deployment can lose them.
+          UP="$HOME/persistent/api-uploads"; mkdir -p "$UP/products"
+          if [ -d "$APP_DIR/uploads" ] && [ ! -L "$APP_DIR/uploads" ]; then
+            cp -an "$APP_DIR/uploads/." "$UP/" && rm -rf "$APP_DIR/uploads"
+          fi
+          ln -sfn "$UP" "$APP_DIR/uploads"
+
           mkdir -p tmp && touch tmp/restart.txt
           echo "Release installed, restart requested."
           REMOTE
